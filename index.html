@@ -229,7 +229,7 @@
           <button type="button" id="favorites-toggle" class="favorites-toggle" aria-pressed="false">♡ Saved <span id="favorites-count">0</span></button>
         </div>
       </div>
-      <p id="status" class="status" role="status" aria-live="polite">Loading a few books for inspiration...</p>
+      <p id="status" class="status" role="status" aria-live="polite">A small starter collection is ready. Search to explore more books.</p>
       <div class="books" id="book-grid" aria-label="Book search results" aria-busy="true"></div>
     </section>
   </main>
@@ -237,7 +237,7 @@
   <footer class="site-footer">
     <div class="wrap footer-row">
       <span>Designed &amp; built by Eric Munkhtulga Davaasuren</span>
-      <span>Book information provided by <a href="https://openlibrary.org/" target="_blank" rel="noopener noreferrer">Open Library</a></span>
+      <span>Search data: <a href="https://openlibrary.org/" target="_blank" rel="noopener noreferrer">Open Library</a> · <a href="https://gutendex.com/" target="_blank" rel="noopener noreferrer">Gutendex</a></span>
     </div>
   </footer>
 
@@ -297,6 +297,8 @@
           author: Array.isArray(doc.author_name) ? String(doc.author_name[0] || "Unknown author") : "Unknown author",
           year: Number.isFinite(doc.first_publish_year) ? doc.first_publish_year : null,
           cover: Number.isInteger(doc.cover_i) ? doc.cover_i : null,
+          coverUrl: typeof doc.coverUrl === "string" ? doc.coverUrl : "",
+          sourceUrl: typeof doc.sourceUrl === "string" ? doc.sourceUrl : "",
           editions: Number.isInteger(doc.edition_count) ? doc.edition_count : null,
           subjects: Array.isArray(doc.subject) ? doc.subject.slice(0, 4).map(String) : []
         };
@@ -344,10 +346,10 @@
         scene.className = "cover-scene";
         const cover = document.createElement("div");
         cover.className = "cover-wrap";
-        if (book.cover) {
+        if (book.cover || book.coverUrl) {
           const image = document.createElement("img");
           image.className = "cover-img";
-          image.src = "https://covers.openlibrary.org/b/id/" + book.cover + "-M.jpg";
+          image.src = book.coverUrl || ("https://covers.openlibrary.org/b/id/" + book.cover + "-M.jpg");
           image.alt = "Cover of " + book.title;
           image.loading = "lazy";
           image.width = 175;
@@ -444,10 +446,119 @@
           span.textContent = subject;
           tags.append(span);
         });
-        const url = book.key.startsWith("/works/") || book.key.startsWith("/books/") ?
-          "https://openlibrary.org" + book.key : "https://openlibrary.org/search?q=" + encodeURIComponent(book.title);
+        const url = book.sourceUrl || (book.key.startsWith("/works/") || book.key.startsWith("/books/") ?
+          "https://openlibrary.org" + book.key : "https://openlibrary.org/search?q=" + encodeURIComponent(book.title));
         $("dialog-open").href = url;
         if (typeof dialog.showModal === "function") dialog.showModal();
+      }
+
+      // A small sample shelf keeps the page usable if a public API is unavailable.
+      // These entries are examples; online search results are only shown after a successful API request.
+      const starterBooks = [
+        ["The Hobbit","J. R. R. Tolkien",1937,"fantasy adventure middle earth"],
+        ["Alice's Adventures in Wonderland","Lewis Carroll",1865,"fantasy adventure classic"],
+        ["Frankenstein","Mary Shelley",1818,"science fiction horror classic"],
+        ["Pride and Prejudice","Jane Austen",1813,"romance classic"],
+        ["The Adventures of Sherlock Holmes","Arthur Conan Doyle",1892,"mystery detective adventure"],
+        ["Dune","Frank Herbert",1965,"science fiction fantasy adventure"],
+        ["The Great Gatsby","F. Scott Fitzgerald",1925,"literary fiction classic"],
+        ["Nineteen Eighty-Four","George Orwell",1949,"science fiction dystopia classic"],
+        ["The Time Machine","H. G. Wells",1895,"science fiction adventure technology"],
+        ["Dracula","Bram Stoker",1897,"horror fantasy mystery"],
+        ["The Picture of Dorian Gray","Oscar Wilde",1890,"art design classic fiction"],
+        ["The Secret Garden","Frances Hodgson Burnett",1911,"children nature adventure"],
+        ["Twenty Thousand Leagues Under the Seas","Jules Verne",1870,"science adventure technology"],
+        ["The Little Prince","Antoine de Saint-Exupéry",1943,"fantasy philosophical"],
+        ["A Study in Scarlet","Arthur Conan Doyle",1887,"detective mystery"]
+      ].map(([title, author, year, subjects], index) => ({
+        key: "sample-" + index,
+        title, author, year, subjects: subjects.split(" "), cover: null, coverUrl: "",
+        editions: null,
+        sourceUrl: "https://openlibrary.org/search?q=" + encodeURIComponent(title)
+      }));
+
+      const searchCache = new Map();
+
+      async function getJson(url, timeoutMs) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const response = await fetch(url, { signal: controller.signal, headers: { "Accept": "application/json" } });
+          if (!response.ok) throw new Error("Service returned HTTP " + response.status);
+          return await response.json();
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+
+      function normalizeGutendex(book) {
+        return {
+          key: "gutenberg-" + book.id,
+          title: String(book.title || "Untitled book"),
+          author: Array.isArray(book.authors) && book.authors[0] ? String(book.authors[0].name) : "Unknown author",
+          year: null,
+          cover: null,
+          coverUrl: book.formats && typeof book.formats["image/jpeg"] === "string" ? book.formats["image/jpeg"] : "",
+          sourceUrl: "https://www.gutenberg.org/ebooks/" + encodeURIComponent(book.id),
+          editions: null,
+          subjects: Array.isArray(book.subjects) ? book.subjects.slice(0, 4).map(String) : []
+        };
+      }
+
+      function normalizeGoogleVolume(item) {
+        const info = item.volumeInfo || {};
+        const date = String(info.publishedDate || "");
+        const year = /^\d{4}/.test(date) ? Number(date.slice(0, 4)) : null;
+        const imageLinks = info.imageLinks || {};
+        const url = String(imageLinks.thumbnail || imageLinks.smallThumbnail || "").replace(/^http:\/\//, "https://");
+        return {
+          key: "google-" + String(item.id || info.title || ""),
+          title: String(info.title || "Untitled book"),
+          author: Array.isArray(info.authors) ? String(info.authors[0]) : "Unknown author",
+          year, cover: null, coverUrl: url,
+          sourceUrl: typeof info.infoLink === "string" && info.infoLink.startsWith("https://") ? info.infoLink : "https://books.google.com/",
+          editions: null,
+          subjects: Array.isArray(info.categories) ? info.categories.slice(0, 4).map(String) : []
+        };
+      }
+
+      async function searchOnline(query) {
+        const encoded = encodeURIComponent(query);
+        // Use only fields shown in the UI to make Open Library requests smaller and faster.
+        try {
+          const data = await getJson(
+            "https://openlibrary.org/search.json?q=" + encoded +
+            "&limit=20&fields=key,title,author_name,first_publish_year,cover_i,edition_count,subject", 6500
+          );
+          if (!Array.isArray(data.docs)) throw new Error("Invalid Open Library response");
+          return { items: data.docs.map(normalized), source: "Open Library" };
+        } catch (openLibraryError) {
+          // A second free public catalog is useful when Open Library is rate limited or unavailable.
+          try {
+            const data = await getJson("https://gutendex.com/books/?search=" + encoded, 6500);
+            if (!Array.isArray(data.results)) throw new Error("Invalid Gutendex response");
+            // If Gutenberg has no matches, Google Books may include newer titles.
+            if (data.results.length) return { items: data.results.slice(0, 20).map(normalizeGutendex), source: "Project Gutenberg" };
+          } catch (gutenbergError) { /* Try one last catalog. */ }
+          try {
+            const data = await getJson("https://www.googleapis.com/books/v1/volumes?q=" + encoded + "&maxResults=20", 6500);
+            if (!Array.isArray(data.items)) {
+              if (data.totalItems === 0) return { items: [], source: "Google Books" };
+              throw new Error("Invalid Google Books response");
+            }
+            return { items: data.items.map(normalizeGoogleVolume), source: "Google Books" };
+          } catch (googleError) {
+            throw new Error("Book search services could not be reached.");
+          }
+        }
+      }
+
+      function searchStarterShelf(query) {
+        const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+        return starterBooks.filter((book) => {
+          const text = (book.title + " " + book.author + " " + book.subjects.join(" ")).toLocaleLowerCase();
+          return terms.every((term) => text.includes(term)) || terms.some((term) => text.includes(term));
+        });
       }
 
       async function searchBooks(query) {
@@ -465,24 +576,28 @@
         subtitle.textContent = "Looking for “" + query + "”";
         grid.setAttribute("aria-busy", "true");
         grid.replaceChildren();
-        showStatus("Searching Open Library...");
+        showStatus("Searching online book catalogs...");
         submit.disabled = true;
         submit.textContent = "Searching...";
         try {
-          const endpoint = "https://openlibrary.org/search.json?q=" + encodeURIComponent(query) + "&limit=20";
-          const response = await fetch(endpoint);
-          if (!response.ok) throw new Error("Search unavailable");
-          const data = await response.json();
+          const key = query.toLocaleLowerCase();
+          const result = searchCache.has(key) ? searchCache.get(key) : await searchOnline(query);
           if (currentRequest !== requestId) return;
-          books = (Array.isArray(data.docs) ? data.docs : []).map(normalized);
+          searchCache.set(key, result);
+          books = result.items;
           renderBooks();
+          showStatus(books.length ? books.length + " books found via " + result.source + "." : "No books found. Try a different search.");
         } catch (error) {
           if (currentRequest !== requestId) return;
-          books = [];
-          grid.setAttribute("aria-busy", "false");
-          renderEmpty("Can't reach the library.", "Please check your internet connection and try again.");
-          heading.textContent = "Search unavailable";
-          showStatus("Open Library could not be reached. Please try again.", true);
+          books = searchStarterShelf(query);
+          renderBooks();
+          if (books.length) {
+            showStatus("Online search is temporarily unavailable. Showing " + books.length + " matching books from the built-in sample shelf.", true);
+          } else {
+            grid.setAttribute("aria-busy", "false");
+            renderEmpty("Online catalog unavailable", "This title is not in the sample shelf. Try again later or search for a popular book.");
+            showStatus("Online book services are unavailable right now. It may be a server, network, rate-limit, or browser access issue.", true);
+          }
         } finally {
           if (currentRequest === requestId) {
             submit.disabled = false;
@@ -490,6 +605,11 @@
           }
         }
       }
+
+      // Show a complete bookshelf immediately, without sending an API request on page load.
+      books = starterBooks.slice(0, 12);
+      renderBooks();
+      showStatus("Featured books from the sample shelf. Search above to find books online.");
 
       form.addEventListener("submit", (event) => {
         event.preventDefault();
@@ -509,7 +629,6 @@
         if (event.target === dialog) dialog.close();
       });
 
-      searchBooks("fantasy adventure");
     })();
   </script>
 </body>
